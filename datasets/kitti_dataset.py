@@ -11,7 +11,7 @@ import skimage.transform
 import numpy as np
 import PIL.Image as pil
 
-from kitti_utils import generate_depth_map
+from kitti_utils import generate_depth_map, generate_depth_map_MOT
 from .mono_dataset import MonoDataset
 
 
@@ -127,6 +127,44 @@ class KITTIDepthDataset(KITTIDataset):
         depth_gt = pil.open(depth_path)
         depth_gt = depth_gt.resize(self.full_res_shape, pil.NEAREST)
         depth_gt = np.array(depth_gt).astype(np.float32) / 256
+
+        if do_flip:
+            depth_gt = np.fliplr(depth_gt)
+
+        return depth_gt
+
+class KITTIMotDataset(KITTIDataset):
+    """KITTI dataset which uses the updated ground truth depth maps
+    """
+    def __init__(self, *args, **kwargs):
+        super(KITTIMotDataset, self).__init__(*args, **kwargs)
+
+    def get_image_path(self, folder, frame_index, side):
+        f_str = "{:06d}{}".format(frame_index, self.img_ext)
+        image_path = os.path.join(
+            self.data_path,
+            "image_02",
+            folder,
+            f_str)
+        return image_path
+
+    def check_depth(self):
+        return True
+    
+    
+    def get_depth(self, folder, frame_index, side, do_flip):
+        calib_path = os.path.join(self.data_path, "calib", folder+".txt")
+
+        velo_filename = os.path.join(
+            self.data_path,
+            "velodyne",
+            folder,
+            "{:06d}.bin".format(int(frame_index)),
+            )
+
+        depth_gt = generate_depth_map_MOT(calib_path, velo_filename, im_shape=self.full_res_shape ,cam=2)
+        depth_gt = skimage.transform.resize(
+            depth_gt, self.full_res_shape[::-1], order=0, preserve_range=True, mode='constant')
 
         if do_flip:
             depth_gt = np.fliplr(depth_gt)
