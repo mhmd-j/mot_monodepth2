@@ -12,6 +12,9 @@ from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
+import matplotlib as mpl
+import matplotlib.cm as cm
+
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -79,11 +82,12 @@ def evaluate(opt):
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
 
         encoder_dict = torch.load(encoder_path)
-
+        
+        img_ext = '.png' if opt.png else '.jpg'
         dataset = datasets.KITTIRAWDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
-                                           [0], 4, is_train=False)
-        dataloader = DataLoader(dataset, 16, shuffle=False, num_workers=opt.num_workers,
+                                           [0], 4, is_train=False, img_ext=img_ext)
+        dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
@@ -115,7 +119,17 @@ def evaluate(opt):
 
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
-
+                
+                vmax = np.percentile(pred_disp[0], 95)
+                normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
+                mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+                colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
+                
+                cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+                cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
+                cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
+                if cv2.waitKey(10) == ord('q'):  # 1 millisecond
+                    exit()
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
@@ -163,7 +177,7 @@ def evaluate(opt):
         quit()
 
     gt_path = os.path.join(splits_dir, opt.eval_split, "gt_depths.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1')["data"]
+    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
 
     print("-> Evaluating")
 

@@ -1,0 +1,80 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "simple depth test",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./test_simple.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--image_path", "assets/test_image.jpg",
+                "--model_name", "mono_no_pt_640x192",
+                "--no_cuda"
+            ]
+        },
+        {
+            "name": "pose eval",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./evaluate_pose.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--eval_split", "odom_9",
+                "--load_weights_folder", "./models/mono_no_pt_640x192",
+                "--data_path", "/home/apera/mhmd/kitti_data_odometry_color",
+                "--png",
+                "--num_workers", "4"
+            ]
+        },
+        {
+            "name": "depth eval",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./evaluate_depth.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--eval_split", "eigen",
+                "--eval_mono",
+                "--load_weights_folder", "./models/mono_no_pt_640x192",
+                "--data_path", "./kitti_data",
+                "--png",
+                "--num_workers", "0",
+                "--batch_size", "1"
+            ]
+        },
+
+        {
+            "name": "depth on MOTData",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./evaluate_depth_mot.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--eval_split", "seq_19",
+                "--eval_mono",
+                "--load_weights_folder", "./models/mono_no_pt_640x192",
+                "--data_path", "/home/apera/mhmd/kittiMOT/data_kittiMOT/training",
+                "--png",
+                "--num_workers", "4",
+                "--batch_size", "1"
+            ]
+        },
+
+        {
+            "name": "gen depth gt",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./gen_mot_text.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--seq", "seq_3",
+                "--data_path", "/home/apera/mhmd/kittiMOT/data_kittiMOT/training",
+                "--split", "mot"
+            ]
+        }
+    ]
+}
