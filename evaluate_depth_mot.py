@@ -126,16 +126,16 @@ def evaluate(opt):
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
                 
-                vmax = np.percentile(pred_disp[0], 95)
-                normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
-                mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-                colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
+                # vmax = np.percentile(pred_disp[0], 95)
+                # normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
+                # mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+                # colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
                 
-                cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
-                cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
-                cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
-                if cv2.waitKey(10) == ord('q'):  # 1 millisecond
-                    exit()
+                # cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+                # cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
+                # cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
+                # if cv2.waitKey(10) == ord('q'):  # 1 millisecond
+                #     exit()
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
@@ -206,8 +206,9 @@ def evaluate(opt):
         pred_disp = pred_disps[i]
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
         pred_depth = 1 / pred_disp
+        vis_depth = pred_depth
 
-        if opt.eval_split == "eigen":
+        if opt.eval_split == "eigen" or "seq" in opt.eval_split:
             mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
             crop = np.array([0.40810811 * gt_height, 0.99189189 * gt_height,
@@ -231,6 +232,27 @@ def evaluate(opt):
         pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
         pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
 
+        if opt.vis_depth:
+            vis_depth *= ratio
+            # vis_depth[vis_depth < MIN_DEPTH] = MIN_DEPTH
+            # vis_depth[vis_depth > MAX_DEPTH] = MAX_DEPTH
+            dmin = np.percentile(vis_depth, 5)
+            dmax = np.percentile(vis_depth, 95)
+            normalizer = mpl.colors.Normalize(vmin=dmin, vmax=dmax)
+            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma_r')
+            colormapped_im = (mapper.to_rgba(vis_depth)[:, :, :3] * 255).astype(np.uint8)
+            depth_colored = cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR)
+            cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+            cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
+            cv2.imshow("depth", depth_colored)
+            # create a results directory and save the depth images in it in a folder with the sequence number and weights folder name
+            model_name = opt.load_weights_folder.split("/")[-1]
+            depth_save_dir = os.path.join("results", 'depth', model_name, f"seq_{sequence_id:02d}")
+            os.makedirs(depth_save_dir, exist_ok=True)
+            cv2.imwrite(os.path.join(depth_save_dir, f"depth_{i:04d}.png"), depth_colored)
+            if cv2.waitKey(10) == ord('q'):  # 1 millisecond
+                exit()
+                
         errors.append(compute_errors(gt_depth, pred_depth))
 
     if not opt.disable_median_scaling:

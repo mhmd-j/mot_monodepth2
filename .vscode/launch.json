@@ -27,9 +27,12 @@
                 "--load_weights_folder", "./models/mono_no_pt_640x192",
                 "--data_path", "/home/apera/mhmd/kitti_data_odometry_color",
                 "--png",
-                "--num_workers", "4"
+                "--num_workers", "4",
+                "--batch_size", "1"
             ]
         },
+
+        // Run depth evaluation KITTI raw Eigen
         {
             "name": "depth eval",
             "type": "debugpy",
@@ -39,14 +42,18 @@
             "args": [
                 "--eval_split", "eigen",
                 "--eval_mono",
-                "--load_weights_folder", "./models/mono_no_pt_640x192",
+                // "--load_weights_folder", "./models/mono_640x192",
+                "--load_weights_folder", "./models/mono_1024x320",
                 "--data_path", "./kitti_data",
                 "--png",
-                "--num_workers", "0",
-                "--batch_size", "1"
+                "--vis_depth",
+                "--post_process",
+                "--num_workers", "8",
+                "--batch_size", "4"
             ]
         },
 
+        // Run depth evaluation KITTI MOT
         {
             "name": "depth on MOTData",
             "type": "debugpy",
@@ -54,27 +61,42 @@
             "program": "./evaluate_depth_mot.py",
             "console": "integratedTerminal",
             "args": [
-                "--eval_split", "seq_19",
+                "--eval_split", "seq_2",
                 "--eval_mono",
                 "--load_weights_folder", "./models/mono_no_pt_640x192",
                 "--data_path", "/home/apera/mhmd/kittiMOT/data_kittiMOT/training",
                 "--png",
-                "--num_workers", "4",
-                "--batch_size", "1"
+                "--vis_depth",
+                "--num_workers", "8",
+                "--batch_size", "4"
             ]
         },
-
+        
+        // Gen text/depth files or for KITTI MOT
         {
-            "name": "gen depth gt",
+            "name": "gen mot depth gt",
             "type": "debugpy",
             "request": "launch",
             "program": "./gen_mot_text.py",
             "console": "integratedTerminal",
             "args": [
-                "--seq", "seq_3",
+                // "--seq", "seq_3",
                 "--data_path", "/home/apera/mhmd/kittiMOT/data_kittiMOT/training",
                 "--split", "mot"
             ]
-        }
+        },
+
+        // Export depth eigen
+        {
+            "name": "export depth eigen",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "./export_gt_depth.py",
+            "console": "integratedTerminal",
+            "args": [
+                "--data_path", "./kitti_data",
+                "--split", "eigen"
+            ]
+        },
     ]
 }

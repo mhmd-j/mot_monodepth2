@@ -119,17 +119,17 @@ def evaluate(opt):
 
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
-                
-                vmax = np.percentile(pred_disp[0], 95)
-                normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
-                mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-                colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
-                
-                cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
-                cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
-                cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
-                if cv2.waitKey(10) == ord('q'):  # 1 millisecond
-                    exit()
+                # if opt.vis_depth:
+                #     vmax = np.percentile(pred_disp[0], 95)
+                #     normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
+                #     mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+                #     colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
+                    
+                #     cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+                #     cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
+                #     cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
+                #     if cv2.waitKey(10) == ord('q'):  # 1 millisecond
+                #         exit()
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
@@ -200,6 +200,7 @@ def evaluate(opt):
         pred_disp = pred_disps[i]
         pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
         pred_depth = 1 / pred_disp
+        vis_depth = pred_depth
 
         if opt.eval_split == "eigen":
             mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
@@ -220,11 +221,26 @@ def evaluate(opt):
         if not opt.disable_median_scaling:
             ratio = np.median(gt_depth) / np.median(pred_depth)
             ratios.append(ratio)
-            pred_depth *= ratio
+            pred_depth *= 34.168
 
         pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
         pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
 
+        if opt.vis_depth:
+            # vmax = np.percentile(pred_depth, 95)
+            vis_depth *= 34.168
+            vis_depth[vis_depth < MIN_DEPTH] = MIN_DEPTH
+            vis_depth[vis_depth > MAX_DEPTH] = MAX_DEPTH
+            # vis_depth = pred_depth.reshape((1197-44, gt_height))
+            normalizer = mpl.colors.Normalize(vmin=MIN_DEPTH, vmax=MAX_DEPTH)
+            mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
+            colormapped_im = (mapper.to_rgba(vis_depth)[:, :, :3] * 255).astype(np.uint8)
+            
+            cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
+            cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
+            cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
+            if cv2.waitKey(10) == ord('q'):  # 1 millisecond
+                exit()
         errors.append(compute_errors(gt_depth, pred_depth))
 
     if not opt.disable_median_scaling:

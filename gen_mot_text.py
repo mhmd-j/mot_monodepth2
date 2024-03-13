@@ -7,7 +7,6 @@ import PIL.Image as pil
 
 from utils import readlines
 from kitti_utils import generate_depth_map_MOT
-import time
 
 def gen_mot_txt_files():
     data_path = '/home/apera/mhmd/kittiMOT/data_kittiMOT/training'
@@ -57,14 +56,13 @@ def export_gt_depths_kitti_mot():
     for seq in seq_no:
         lines = readlines(os.path.join(split_folder, seq))
 
-        print("Exporting ground truth depths for {}".format(opt.split))
+        print("Exporting ground truth depths for {}, {}".format(opt.split, seq))
 
         gt_depths = []
         for line in lines:
 
             folder, frame_id, _ = line.split()
             frame_id = int(frame_id)
-            tic = time.time()
             if opt.split == "mot":
                 calib_dir = os.path.join(opt.data_path, "calib", folder.split("/")[0] + ".txt")
                 # velo_filename = os.path.join(opt.data_path, folder,
@@ -75,9 +73,8 @@ def export_gt_depths_kitti_mot():
                     folder,
                     "{:06d}.bin".format(int(frame_id)),
                     )
-                gt_depth = generate_depth_map_MOT(calib_dir, velo_filename, im_shape=(1242, 375), cam=2, vel_depth=True)
+                gt_depth = generate_depth_map_MOT(calib_dir, velo_filename, im_shape=(375, 1242), cam=2, vel_depth=True)
 
-            print(f"depth at {frame_id} took {(time.time()-tic):.4f}")
             gt_depths.append(gt_depth.astype(np.float32))
         
         output_path = os.path.join(split_folder, "gt_depths", seq.split('.')[0] + ".npz")

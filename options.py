@@ -202,6 +202,10 @@ class MonodepthOptions:
                                  help="if set will perform the flipping post processing "
                                       "from the original monodepth paper",
                                  action="store_true")
+        
+        self.parser.add_argument("--vis_depth",
+                                 help="if set will show the depth during evaluation",
+                                 action="store_true")
 
     def parse(self):
         self.options = self.parser.parse_args()
