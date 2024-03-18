@@ -7,14 +7,14 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader
 
-from layers import disp_to_depth
+from layers import disp_to_depth, transformation_from_parameters
 from utils import readlines
 from options import MonodepthOptions
 import datasets
 import networks
 import matplotlib as mpl
 import matplotlib.cm as cm
-
+from evaluate_pose import dump_xyz, compute_ate
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -86,36 +86,51 @@ def evaluate(opt):
         
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
-
+        pose_encoder_path = os.path.join(opt.load_weights_folder, "pose_encoder.pth")
+        pose_decoder_path = os.path.join(opt.load_weights_folder, "pose.pth")
+        
         encoder_dict = torch.load(encoder_path)
         
         img_ext = '.png' if opt.png else '.jpg'
         dataset = datasets.KITTIMotDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
-                                           [0], 4, is_train=False, img_ext=img_ext)
+                                           [0, 1], 4, is_train=False, img_ext=img_ext)
         dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
         encoder = networks.ResnetEncoder(opt.num_layers, False)
         depth_decoder = networks.DepthDecoder(encoder.num_ch_enc)
-
+        pose_encoder = networks.ResnetEncoder(opt.num_layers, False, 2)
+        pose_decoder = networks.PoseDecoder(pose_encoder.num_ch_enc, 1, 2)
+        
         model_dict = encoder.state_dict()
         encoder.load_state_dict({k: v for k, v in encoder_dict.items() if k in model_dict})
         depth_decoder.load_state_dict(torch.load(decoder_path))
+        pose_encoder.load_state_dict(torch.load(pose_encoder_path))
+        pose_decoder.load_state_dict(torch.load(pose_decoder_path))
 
         encoder.cuda()
         encoder.eval()
         depth_decoder.cuda()
         depth_decoder.eval()
+        pose_encoder.cuda()
+        pose_encoder.eval()
+        pose_decoder.cuda()
+        pose_decoder.eval()
 
         pred_disps = []
+        pred_poses = []
 
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
+        
+        opt.frame_ids = [0, 1]  # pose network only takes two frames as input
 
         with torch.no_grad():
             for data in dataloader:
-                input_color = data[("color", 0, 0)].cuda()
+                input_color = data[("color", 1, 0)].cuda()
+                for i in opt.frame_ids:
+                    data[("color_aug", i, 0)] = data[("color_aug", i, 0)].cuda()
 
                 if opt.post_process:
                     # Post-processed results require each image to have two forward passes
@@ -126,23 +141,20 @@ def evaluate(opt):
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
                 
-                # vmax = np.percentile(pred_disp[0], 95)
-                # normalizer = mpl.colors.Normalize(vmin=pred_disp[0].min(), vmax=vmax)
-                # mapper = cm.ScalarMappable(norm=normalizer, cmap='magma')
-                # colormapped_im = (mapper.to_rgba(pred_disp[0])[:, :, :3] * 255).astype(np.uint8)
-                
-                # cv2.namedWindow("depth", cv2.WINDOW_NORMAL | cv2.WINDOW_KEEPRATIO)  # allow window resize (Linux)
-                # cv2.resizeWindow("depth", colormapped_im.shape[1], colormapped_im.shape[0])
-                # cv2.imshow("depth", cv2.cvtColor(colormapped_im, cv2.COLOR_RGB2BGR))
-                # if cv2.waitKey(10) == ord('q'):  # 1 millisecond
-                #     exit()
+                all_color_aug = torch.cat([data[("color_aug", i, 0)] for i in opt.frame_ids], 1)
+                features = [pose_encoder(all_color_aug)]
+                axisangle, translation = pose_decoder(features)
+
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
 
                 pred_disps.append(pred_disp)
+                pred_poses.append(
+                    transformation_from_parameters(axisangle[:, 0], translation[:, 0]).cpu().numpy())
 
         pred_disps = np.concatenate(pred_disps)
+        pred_poses = np.concatenate(pred_poses)
 
     else:
         # Load predictions from file
@@ -184,7 +196,12 @@ def evaluate(opt):
 
     gt_path = os.path.join(splits_dir,"mot", "gt_depths", f"seq_{sequence_id:02d}.npz")
     gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
-
+    # gt_poses_path = os.path.join(opt.data_path, "pose", "{:04d}".format(sequence_id), "pose.txt")
+    # gt_global_poses = np.loadtxt(gt_poses_path).reshape(-1, 3, 4)
+    # gt_global_poses = np.concatenate(
+    #     (gt_global_poses, np.zeros((gt_global_poses.shape[0], 1, 4))), 1)
+    # gt_global_poses[:, 3, 3] = 1
+    # gt_xyzs = gt_global_poses[:, :3, 3]
     print("-> Evaluating")
 
     if opt.eval_stereo:
@@ -197,8 +214,9 @@ def evaluate(opt):
 
     errors = []
     ratios = []
+    # gt_local_poses = []
 
-    for i in range(pred_disps.shape[0]):
+    for i in range(1, pred_disps.shape[0]):
 
         gt_depth = gt_depths[i]
         gt_height, gt_width = gt_depth.shape[:2]
@@ -252,9 +270,32 @@ def evaluate(opt):
             cv2.imwrite(os.path.join(depth_save_dir, f"depth_{i:04d}.png"), depth_colored)
             if cv2.waitKey(10) == ord('q'):  # 1 millisecond
                 exit()
-                
+        
+        # gt_local_poses.append(
+        #     np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
+        
         errors.append(compute_errors(gt_depth, pred_depth))
 
+    # compute pose errors
+    local_xyzs = np.array(dump_xyz(pred_poses))
+    # plot the trajectory
+    import matplotlib.pyplot as plt
+    fig = plt.figure()
+    ax = fig.add_subplot(111)
+    ax.plot(local_xyzs[:, 0], local_xyzs[:, 1], label='predicted')
+    plt.show()
+    
+    # ates = []
+    # num_frames = gt_xyzs.shape[0]
+    # track_length = 5
+    # for i in range(0, num_frames - 1):
+    #     local_xyzs = np.array(dump_xyz(pred_poses[i:i + track_length - 1]))
+    #     gt_local_xyzs = np.array(dump_xyz(gt_local_poses[i:i + track_length - 1]))
+
+        # ates.append(compute_ate(gt_local_xyzs, local_xyzs))
+    # print("\n   Trajectory error: {:0.3f}, std: {:0.3f}\n".format(np.mean(ates), np.std(ates)))
+    
+        
     if not opt.disable_median_scaling:
         ratios = np.array(ratios)
         med = np.median(ratios)
