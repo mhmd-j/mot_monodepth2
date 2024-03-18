@@ -188,6 +188,10 @@ class MonodepthOptions:
         self.parser.add_argument("--save_pred_disps",
                                  help="if set saves predicted disparities",
                                  action="store_true")
+        
+        self.parser.add_argument("--save_pred_poses",
+                                 help="if set saves predicted poses",
+                                 action="store_true")
         self.parser.add_argument("--no_eval",
                                  help="if set disables evaluation",
                                  action="store_true")
