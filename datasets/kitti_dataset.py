@@ -11,7 +11,7 @@ import skimage.transform
 import numpy as np
 import PIL.Image as pil
 
-from kitti_utils import generate_depth_map, generate_depth_map_MOT
+from kitti_utils import generate_depth_map, generate_depth_map_MOT, generate_depth_map_odom
 from .mono_dataset import MonoDataset
 
 
@@ -47,7 +47,8 @@ class KITTIDataset(MonoDataset):
         return os.path.isfile(velo_filename)
 
     def get_color(self, folder, frame_index, side, do_flip):
-        color = self.loader(self.get_image_path(folder, frame_index, side))
+        _im_path = self.get_image_path(folder, frame_index, side)
+        color = self.loader(_im_path)
 
         if do_flip:
             color = color.transpose(pil.FLIP_LEFT_RIGHT)
@@ -99,6 +100,25 @@ class KITTIOdomDataset(KITTIDataset):
             "image_{}".format(self.side_map[side]),
             f_str)
         return image_path
+    
+    def get_depth(self, folder, frame_index, side, do_flip):
+        calib_path = os.path.join(self.data_path, 'sequences', f"{folder:02d}", "calib.txt")
+
+        velo_filename = os.path.join(
+            self.data_path,
+            "sequences",
+            f"{folder:02d}",
+            "velodyne",
+            "{:06d}.bin".format(int(frame_index)),
+            )
+
+        depth_gt = generate_depth_map_odom(calib_path, velo_filename, im_shape=self.full_res_shape ,cam=2)
+        depth_gt = skimage.transform.resize(
+            depth_gt, self.full_res_shape[::-1], order=0, preserve_range=True, mode='constant')
+
+        if do_flip:
+            depth_gt = np.fliplr(depth_gt)
+
 
 
 class KITTIDepthDataset(KITTIDataset):

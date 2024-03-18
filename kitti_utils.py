@@ -150,3 +150,45 @@ def generate_depth_map_MOT(calib_dir, velo_filename, im_shape, cam=2, vel_depth=
     depth[depth < 0] = 0
 
     return depth
+
+
+def generate_depth_map_odom(calib_dir, velo_filename, im_shape, cam=2, vel_depth=False):
+    """Generate a depth map from velodyne data from the KITTI odometry dataset"""
+    # load calibration files
+    cam2cam = read_calib_file(calib_dir)
+    velo2cam = cam2cam['Tr'].reshape(3, 4)
+    velo2cam = np.vstack((velo2cam, np.array([0, 0, 0, 1.0])))
+
+    R_cam2rect = np.eye(4)
+    P_rect = cam2cam['P2'].reshape(3, 4)
+    P_velo2im = np.dot(np.dot(P_rect, R_cam2rect), velo2cam)
+
+    velo = load_velodyne_points(velo_filename)
+    velo = velo[velo[:, 0] >= 0, :]
+
+    # project the points to the camera
+    velo_pts_im = np.dot(P_velo2im, velo.T).T
+    velo_pts_im[:, :2] = velo_pts_im[:, :2] / velo_pts_im[:, 2][..., np.newaxis]
+
+    if vel_depth:
+        velo_pts_im[:, 2] = velo[:, 0]
+
+    velo_pts_im[:, 0] = np.round(velo_pts_im[:, 0]) - 1
+    velo_pts_im[:, 1] = np.round(velo_pts_im[:, 1]) - 1
+    val_inds = (velo_pts_im[:, 0] >= 0) & (velo_pts_im[:, 1] >= 0)
+    val_inds = val_inds & (velo_pts_im[:, 0] < im_shape[1]) & (velo_pts_im[:, 1] < im_shape[0])
+    velo_pts_im = velo_pts_im[val_inds, :]
+
+    depth = np.zeros((im_shape[:2]))
+    depth[velo_pts_im[:, 1].astype(np.int32), velo_pts_im[:, 0].astype(np.int32)] = velo_pts_im[:, 2]
+
+    # find the duplicate points and choose the closest depth
+    inds = sub2ind(depth.shape, velo_pts_im[:, 1], velo_pts_im[:, 0])
+    dupe_inds = [item for item, count in Counter(inds).items() if count > 1]
+    for doub_ind in dupe_inds:
+        pts = np.where(inds == doub_ind)[0]
+        x_loc = int(velo_pts_im[pts[0], 0])
+        y_loc = int(velo_pts_im[pts[0], 1])
+        depth[y_loc, x_loc] = velo_pts_im[pts, 2].min()
+    depth[depth < 0] = 0
+    return depth
