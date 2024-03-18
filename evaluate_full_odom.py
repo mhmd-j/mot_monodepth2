@@ -78,11 +78,12 @@ def evaluate(opt):
         print("-> Loading weights from {}".format(opt.load_weights_folder))
 
         # filenames are all the files in opt.data_path/pose
-        
+            
         sequence_id = int(opt.eval_split.split("_")[1])
+
         filenames = readlines(
-            os.path.join(os.path.dirname(__file__), "splits", "mot",
-                     "seq_{:02d}.txt".format(sequence_id)))
+            os.path.join(os.path.dirname(__file__), "splits", "odom",
+                        "test_files_{:02d}.txt".format(sequence_id)))
         
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
@@ -92,7 +93,7 @@ def evaluate(opt):
         encoder_dict = torch.load(encoder_path)
         
         img_ext = '.png' if opt.png else '.jpg'
-        dataset = datasets.KITTIMotDataset(opt.data_path, filenames,
+        dataset = datasets.KITTIOdomDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            [0, 1], 4, is_train=False, img_ext=img_ext)
         dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
@@ -172,6 +173,13 @@ def evaluate(opt):
             opt.load_weights_folder, "disps_{}_split.npy".format(opt.eval_split))
         print("-> Saving predicted disparities to ", output_path)
         np.save(output_path, pred_disps)
+    
+    if opt.save_pred_poses:
+        line_pred_poses = pred_poses.reshape(-1, 16)
+        model_name = opt.load_weights_folder.split("/")[-1]
+        save_path = os.path.join("results", 'full_kitti_odom', model_name, f"seq_{sequence_id:02d}")
+        os.makedirs(save_path, exist_ok=True)
+        np.savetxt(os.path.join(save_path, "pred_poses.txt"), line_pred_poses)
 
     if opt.no_eval:
         print("-> Evaluation disabled. Done.")
@@ -194,14 +202,15 @@ def evaluate(opt):
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
         quit()
 
-    gt_path = os.path.join(splits_dir,"mot", "gt_depths", f"seq_{sequence_id:02d}.npz")
+    gt_path = os.path.join(splits_dir,"odom", "gt_depths", f"test_files_{sequence_id:02d}.npz")
     gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
-    # gt_poses_path = os.path.join(opt.data_path, "pose", "{:04d}".format(sequence_id), "pose.txt")
-    # gt_global_poses = np.loadtxt(gt_poses_path).reshape(-1, 3, 4)
-    # gt_global_poses = np.concatenate(
-    #     (gt_global_poses, np.zeros((gt_global_poses.shape[0], 1, 4))), 1)
-    # gt_global_poses[:, 3, 3] = 1
-    # gt_xyzs = gt_global_poses[:, :3, 3]
+    gt_poses_path = os.path.join(opt.data_path, "poses", "{:02d}.txt".format(sequence_id))
+    gt_global_poses = np.loadtxt(gt_poses_path).reshape(-1, 3, 4)
+    gt_global_poses = np.concatenate(
+        (gt_global_poses, np.zeros((gt_global_poses.shape[0], 1, 4))), 1)
+    gt_global_poses[:, 3, 3] = 1
+    gt_xyzs = gt_global_poses[:, :3, 3]
+    
     print("-> Evaluating")
 
     if opt.eval_stereo:
@@ -265,17 +274,18 @@ def evaluate(opt):
             cv2.imshow("depth", depth_colored)
             # create a results directory and save the depth images in it in a folder with the sequence number and weights folder name
             model_name = opt.load_weights_folder.split("/")[-1]
-            depth_save_dir = os.path.join("results", 'depth', model_name, f"seq_{sequence_id:02d}")
+            depth_save_dir = os.path.join("results", 'full_kitti_odom', model_name, f"seq_{sequence_id:02d}")
             os.makedirs(depth_save_dir, exist_ok=True)
             cv2.imwrite(os.path.join(depth_save_dir, f"depth_{i:04d}.png"), depth_colored)
             if cv2.waitKey(10) == ord('q'):  # 1 millisecond
                 exit()
         
-        # gt_local_poses.append(
-        #     np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
-        
         errors.append(compute_errors(gt_depth, pred_depth))
-
+        
+    for i in range(1, len(gt_global_poses)):
+        gt_local_poses.append(
+            np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
+        
     # compute pose errors
     local_xyzs = np.array(dump_xyz(pred_poses))
     # plot the trajectory
@@ -286,14 +296,14 @@ def evaluate(opt):
     plt.show()
     
     ates = []
-    # num_frames = gt_xyzs.shape[0]
-    # track_length = 5
-    # for i in range(0, num_frames - 1):
-    #     local_xyzs = np.array(dump_xyz(pred_poses[i:i + track_length - 1]))
-    #     gt_local_xyzs = np.array(dump_xyz(gt_local_poses[i:i + track_length - 1]))
+    num_frames = gt_xyzs.shape[0]
+    track_length = 5
+    for i in range(0, num_frames - 1):
+        local_xyzs = np.array(dump_xyz(pred_poses[i:i + track_length - 1]))
+        gt_local_xyzs = np.array(dump_xyz(gt_local_poses[i:i + track_length - 1]))
 
-        # ates.append(compute_ate(gt_local_xyzs, local_xyzs))
-    # print("\n   Trajectory error: {:0.3f}, std: {:0.3f}\n".format(np.mean(ates), np.std(ates)))
+        ates.append(compute_ate(gt_local_xyzs, local_xyzs))
+    print("\n   Trajectory error: {:0.3f}, std: {:0.3f}\n".format(np.mean(ates), np.std(ates)))
     
         
     if not opt.disable_median_scaling:
