@@ -169,7 +169,7 @@ class KITTIMotDataset(KITTIDataset):
         return image_path
 
     def check_depth(self):
-        return True
+        return False
     
     
     def get_depth(self, folder, frame_index, side, do_flip):

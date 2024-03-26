@@ -147,6 +147,8 @@ class MonoDataset(data.Dataset):
             frame_index = int(line[1])
         else:
             frame_index = 0
+        
+        inputs["index"] = frame_index
 
         if len(line) == 3:
             side = line[2]

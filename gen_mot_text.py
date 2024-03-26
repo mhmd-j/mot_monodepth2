@@ -19,6 +19,8 @@ def gen_mot_txt_files():
         img_file = os.path.join(data_path, "image_02", seq)
         img_list = sorted(os.listdir(img_file))
         img_list.sort()
+        # pop the last one because we need two consecutive images
+        img_list.pop()
         # delete the zeros in the beginning of the seq string
         with open(os.path.join(save_dir, f'seq_{int(seq):02d}.txt'), 'w') as f:
             for img in img_list:
@@ -144,4 +146,4 @@ def export_gt_depths_kitti_odom():
 
 if __name__ == "__main__":
     # export_gt_depths_kitti_mot()
-    export_gt_depths_kitti_odom()
+    gen_mot_txt_files()

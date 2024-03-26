@@ -55,20 +55,22 @@
 
         // Run depth/pose evaluation KITTI MOT
         {
-            "name": "depth on MOTData",
+            "name": "Full on MOTData",
             "type": "debugpy",
             "request": "launch",
             "program": "./evaluate_depth_mot.py",
             "console": "integratedTerminal",
             "args": [
-                "--eval_split", "seq_14",
+                "--eval_split", "seq_19",
                 "--eval_mono",
                 "--load_weights_folder", "./models/mono_no_pt_640x192",
                 "--data_path", "/home/apera/mhmd/kittiMOT/data_kittiMOT/training",
                 "--png",
-                "--vis_depth",
-                "--num_workers", "0",
-                "--batch_size", "1"
+                // "--vis_depth",
+                "--num_workers", "0", 
+                "--batch_size", "1", // It must be 1, otherwise it will crash
+                "--save_pred_disps",
+                "--save_pred_poses"
             ]
         },
         

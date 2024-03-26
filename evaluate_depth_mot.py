@@ -94,7 +94,7 @@ def evaluate(opt):
         img_ext = '.png' if opt.png else '.jpg'
         dataset = datasets.KITTIMotDataset(opt.data_path, filenames,
                                            encoder_dict['height'], encoder_dict['width'],
-                                           [0, 1], 4, is_train=False, img_ext=img_ext)
+                                           frame_idxs = [0, 1], num_scales=4, is_train=False, img_ext=img_ext)
         dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
                                 pin_memory=True, drop_last=False)
 
@@ -124,11 +124,16 @@ def evaluate(opt):
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
         
+        if opt.save_pred_disps:
+            model_name = opt.load_weights_folder.split("/")[-1]
+            depth_save_dir = os.path.join("results", "mot", model_name, 'depth', f"{sequence_id:04d}")
+            os.makedirs(depth_save_dir, exist_ok=True)
+            
         opt.frame_ids = [0, 1]  # pose network only takes two frames as input
 
         with torch.no_grad():
             for data in dataloader:
-                input_color = data[("color", 1, 0)].cuda()
+                input_color = data[("color", 0, 0)].cuda()
                 for i in opt.frame_ids:
                     data[("color_aug", i, 0)] = data[("color_aug", i, 0)].cuda()
 
@@ -148,10 +153,29 @@ def evaluate(opt):
                 if opt.post_process:
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
+                    
+                if opt.save_pred_disps:
+                    output_path = os.path.join(
+                        depth_save_dir, f"{data['index'][0].item():06d}.npy")
+                    np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
 
                 pred_disps.append(pred_disp)
                 pred_poses.append(
                     transformation_from_parameters(axisangle[:, 0], translation[:, 0]).cpu().numpy())
+            
+            # generate depth for the last frame
+            input_color = data[("color", 1, 0)].cuda()
+            if opt.post_process:
+                # Post-processed results require each image to have two forward passes
+                input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
+            output = depth_decoder(encoder(input_color))
+            pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
+            pred_disp = pred_disp.cpu()[:, 0].numpy()
+            if opt.save_pred_disps:
+                output_path = os.path.join(
+                    depth_save_dir, f"{data['index'][0].item()+1:06d}.npy")
+                np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
+            pred_disps.append(pred_disp)
 
         pred_disps = np.concatenate(pred_disps)
         pred_poses = np.concatenate(pred_poses)
@@ -166,12 +190,19 @@ def evaluate(opt):
                 os.path.join(splits_dir, "benchmark", "eigen_to_benchmark_ids.npy"))
 
             pred_disps = pred_disps[eigen_to_benchmark_ids]
+            
+    if opt.save_pred_poses:
+        line_pred_poses = pred_poses.reshape(-1, 16)
+        model_name = opt.load_weights_folder.split("/")[-1]
+        save_path = os.path.join("results", 'mot', model_name, "pred_motion",  f"{sequence_id:04d}",)
+        os.makedirs(save_path, exist_ok=True)
+        np.savetxt(os.path.join(save_path, "pred_motion.txt"), line_pred_poses)
 
-    if opt.save_pred_disps:
-        output_path = os.path.join(
-            opt.load_weights_folder, "disps_{}_split.npy".format(opt.eval_split))
-        print("-> Saving predicted disparities to ", output_path)
-        np.save(output_path, pred_disps)
+    # if opt.save_pred_disps:
+    #     output_path = os.path.join(
+    #         opt.load_weights_folder, "disps_{}_split.npy".format(opt.eval_split))
+    #     print("-> Saving predicted disparities to ", output_path)
+    #     np.save(output_path, pred_disps)
 
     if opt.no_eval:
         print("-> Evaluation disabled. Done.")
@@ -270,20 +301,22 @@ def evaluate(opt):
             cv2.imwrite(os.path.join(depth_save_dir, f"depth_{i:04d}.png"), depth_colored)
             if cv2.waitKey(10) == ord('q'):  # 1 millisecond
                 exit()
-        
-        # gt_local_poses.append(
-        #     np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
+
         
         errors.append(compute_errors(gt_depth, pred_depth))
-
+        
+        
+    # for i in range(1, len(gt_global_poses)):
+    #     gt_local_poses.append(
+    #         np.linalg.inv(np.dot(np.linalg.inv(gt_global_poses[i - 1]), gt_global_poses[i])))
     # compute pose errors
     local_xyzs = np.array(dump_xyz(pred_poses))
     # plot the trajectory
-    import matplotlib.pyplot as plt
-    fig = plt.figure()
-    ax = fig.add_subplot(111)
-    ax.plot(local_xyzs[:, 0], local_xyzs[:, 1], label='predicted')
-    plt.show()
+    # import matplotlib.pyplot as plt
+    # fig = plt.figure()
+    # ax = fig.add_subplot(111)
+    # ax.plot(local_xyzs[:, 0], local_xyzs[:, 1], label='predicted')
+    # plt.show()
     
     # ates = []
     # num_frames = gt_xyzs.shape[0]
