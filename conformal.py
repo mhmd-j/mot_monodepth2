@@ -30,14 +30,14 @@ splits_dir = os.path.join(os.path.dirname(__file__), "splits")
 STEREO_SCALE_FACTOR = 5.4
 
 def calculate_pixelwise_nonconformity_scores(y_pred, gt_depth, min_depth=1e-3, max_depth=80, split="eigen"):
-    gt_height, gt_width = gt_depth.shape[:2]
+    gt_height, gt_width = gt_depth.shape[1:]
     if split == "eigen" or "seq" in split:
         mask = np.logical_and(gt_depth > min_depth, gt_depth < max_depth)
 
         crop = np.array([0.40810811 * gt_height, 0.99189189 * gt_height,
                             0.03594771 * gt_width,  0.96405229 * gt_width]).astype(np.int32)
         crop_mask = np.zeros(mask.shape)
-        crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1
+        crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1 #FIXME: not sure if this is correct
         mask = np.logical_and(mask, crop_mask)
         
     nonconformity_scores = np.abs(gt_depth - y_pred) * mask  # Absolute error at each pixel
@@ -134,7 +134,6 @@ def compute_errors(gt, pred):
 
     return abs_rel, sq_rel, rmse, rmse_log, a1, a2, a3
 
-
 def batch_post_process_disparity(l_disp, r_disp):
     """Apply the disparity post-processing method as introduced in Monodepthv1
     """
@@ -180,7 +179,7 @@ def evaluate(opt):
         encoder_dict = torch.load(encoder_path)
         
         img_ext = '.png' if opt.png else '.jpg'
-        dataset = datasets.KITTIRAWDataset(opt.data_path, val_filenames, #TODO: check if it works with this type of frame ids
+        dataset = datasets.KITTIRAWDataset(opt.data_path, val_filenames,
                                            encoder_dict['height'], encoder_dict['width'],
                                            frame_idxs = [0, 1], num_scales=4, is_train=False, img_ext=img_ext)
         dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
@@ -209,6 +208,7 @@ def evaluate(opt):
         pred_disps = []
         pred_poses = []
         gt_depths = []
+        nonconformity_scores = []
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
         
@@ -232,8 +232,15 @@ def evaluate(opt):
                 output = depth_decoder(encoder(input_color))
 
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
-                pred_disp = pred_disp.cpu()[:, 0].numpy()
+                
                 gt_depth = data["depth_gt"][:, 0].numpy()
+                gt_height, gt_width = gt_depth.shape[1:]
+                # interpolate the predicted disparity to the ground truth size
+                pred_disp = torch.nn.functional.interpolate(
+                    pred_disp, [gt_height, gt_width], mode="bilinear", align_corners=False)
+                
+                pred_disp = pred_disp.cpu()[:, 0].numpy()
+                pred_depth = 1 / pred_disp
                 
                 all_color_aug = torch.cat([data[("color_aug", i, 0)] for i in opt.frame_ids], 1)
                 features = [pose_encoder(all_color_aug)]
@@ -243,35 +250,39 @@ def evaluate(opt):
                     N = pred_disp.shape[0] // 2
                     pred_disp = batch_post_process_disparity(pred_disp[:N], pred_disp[N:, :, ::-1])
                     
-                if opt.save_pred_disps:
+                if opt.save_pred_disps:#FIXME: prob doesn't work when workder is not 0 and batch size is not 1
                     output_path = os.path.join(
                         depth_save_dir, f"{data['index'][0].item():06d}.npy")
                     np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
+                
+                
+                # pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
+                if not opt.disable_median_scaling:
+                    ratio = 35 # this the median of the mean of the gt_depths over one sequence
+                    pred_depth *= ratio
 
-                pred_disps.append(pred_disp)
-                gt_depths.append(gt_depth)
-                pred_poses.append(
-                    transformation_from_parameters(axisangle[:, 0], translation[:, 0]).cpu().numpy())
+                # pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
+                # pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
+        
+                nonconformity_scores.append(calculate_pixelwise_nonconformity_scores(pred_depth, gt_depth))
+
+                # pred_disps.append(pred_disp)
+                # gt_depths.append(gt_depth)
+                # pred_poses.append(
+                #     transformation_from_parameters(axisangle[:, 0], translation[:, 0]).cpu().numpy())
                 
                 print_progress(indx + 1, len(dataloader), prefix='Progress:', suffix='Complete', length=50)
             
-            # generate depth for the last frame
-            # input_color = data[("color", 1, 0)].cuda()
-            # if opt.post_process:
-            #     # Post-processed results require each image to have two forward passes
-            #     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
-            # output = depth_decoder(encoder(input_color))
-            # pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
-            # pred_disp = pred_disp.cpu()[:, 0].numpy()
-            # if opt.save_pred_disps:
-            #     output_path = os.path.join(
-            #         depth_save_dir, f"{data['index'][0].item()+1:06d}.npy")
-            #     np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
-            # pred_disps.append(pred_disp)
 
-        pred_disps = np.concatenate(pred_disps)
-        pred_poses = np.concatenate(pred_poses)
-        gt_depths = np.concatenate(gt_depths)
+
+
+        # pred_disps = np.concatenate(pred_disps)
+        # pred_poses = np.concatenate(pred_poses)
+        # gt_depths = np.concatenate(gt_depths)
+        nonconformity_scores = np.concatenate(nonconformity_scores)
+        lower_bound, upper_bound = get_pixelwise_prediction_interval_std(pred_depth[0], nonconformity_scores)
+        if opt.vis_depth:
+            plot_depth_with_uncertainty(pred_depth, lower_bound, upper_bound, gt_depth)
 
     else:
         # Load predictions from file
@@ -318,15 +329,6 @@ def evaluate(opt):
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
         quit()
 
-    # gt_path = os.path.join(splits_dir,"mot", "gt_depths", f"seq_{sequence_id:02d}.npz") #FIXME: 
-    # gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
-    
-    # gt_poses_path = os.path.join(opt.data_path, "pose", "{:04d}".format(sequence_id), "pose.txt")
-    # gt_global_poses = np.loadtxt(gt_poses_path).reshape(-1, 3, 4)
-    # gt_global_poses = np.concatenate(
-    #     (gt_global_poses, np.zeros((gt_global_poses.shape[0], 1, 4))), 1)
-    # gt_global_poses[:, 3, 3] = 1
-    # gt_xyzs = gt_global_poses[:, :3, 3]
     print("-> Evaluating")
 
     if opt.eval_stereo:
@@ -342,45 +344,45 @@ def evaluate(opt):
     nonconformity_scores = []
     # gt_local_poses = []
 
-    for i in range(1, pred_disps.shape[0]):
+    # for i in range(1, pred_disps.shape[0]):
 
-        gt_depth = gt_depths[i]
-        gt_height, gt_width = gt_depth.shape[:2]
+    #     gt_depth = gt_depths[i]
+    #     gt_height, gt_width = gt_depth.shape[:2]
 
-        pred_disp = pred_disps[i]
-        pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
-        pred_depth = 1 / pred_disp
+    #     pred_disp = pred_disps[i]
+    #     pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
+    #     pred_depth = 1 / pred_disp
 
-        # if opt.eval_split == "eigen" or "seq" in opt.eval_split:
-        #     mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
+    #     # if opt.eval_split == "eigen" or "seq" in opt.eval_split:
+    #     #     mask = np.logical_and(gt_depth > MIN_DEPTH, gt_depth < MAX_DEPTH)
 
-        #     crop = np.array([0.40810811 * gt_height, 0.99189189 * gt_height,
-        #                      0.03594771 * gt_width,  0.96405229 * gt_width]).astype(np.int32)
-        #     crop_mask = np.zeros(mask.shape)
-        #     crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1
-        #     mask = np.logical_and(mask, crop_mask)
+    #     #     crop = np.array([0.40810811 * gt_height, 0.99189189 * gt_height,
+    #     #                      0.03594771 * gt_width,  0.96405229 * gt_width]).astype(np.int32)
+    #     #     crop_mask = np.zeros(mask.shape)
+    #     #     crop_mask[crop[0]:crop[1], crop[2]:crop[3]] = 1
+    #     #     mask = np.logical_and(mask, crop_mask)
 
-        # else:
-        #     mask = gt_depth > 0
+    #     # else:
+    #     #     mask = gt_depth > 0
 
-        # pred_depth = pred_depth[mask]
-        # gt_depth = gt_depth[mask]
+    #     # pred_depth = pred_depth[mask]
+    #     # gt_depth = gt_depth[mask]
 
-        # pred_depth *= opt.pred_depth_scale_factor
-        if not opt.disable_median_scaling:
-            ratio = 35 # this the median of the mean of the gt_depths over one sequence
-            pred_depth *= ratio
+    #     # pred_depth *= opt.pred_depth_scale_factor
+    #     if not opt.disable_median_scaling:
+    #         ratio = 35 # this the median of the mean of the gt_depths over one sequence
+    #         pred_depth *= ratio
 
-        # pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
-        # pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
+    #     # pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
+    #     # pred_depth[pred_depth > MAX_DEPTH] = MAX_DEPTH
         
-        nonconformity_scores.append(calculate_pixelwise_nonconformity_scores(pred_depth, gt_depth))
+    #     nonconformity_scores.append(calculate_pixelwise_nonconformity_scores(pred_depth, gt_depth))
         
-    nonconformity_scores = np.array(nonconformity_scores)
+    # nonconformity_scores = np.array(nonconformity_scores)
 
-    lower_bound, upper_bound = get_pixelwise_prediction_interval_std(pred_depth, nonconformity_scores)
-    if opt.vis_depth:
-        plot_depth_with_uncertainty(pred_depth, lower_bound, upper_bound, gt_depth)
+    # lower_bound, upper_bound = get_pixelwise_prediction_interval_std(pred_depth, nonconformity_scores)
+    # if opt.vis_depth:
+    #     plot_depth_with_uncertainty(pred_depth, lower_bound, upper_bound, gt_depth)
 
 
 if __name__ == "__main__":
