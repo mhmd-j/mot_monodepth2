@@ -17,6 +17,7 @@ import matplotlib as mpl
 import matplotlib.cm as cm
 from evaluate_pose import dump_xyz, compute_ate
 from matplotlib import pyplot as plt
+import sys
 
 cv2.setNumThreads(0)  # This speeds up evaluation 5x on our unix systems (OpenCV 3.3.1)
 
@@ -112,6 +113,7 @@ def plot_depth_with_uncertainty(vis_depth, lower_bound, upper_bound, gt_depth):
     # create a results directory and save the depth images in it in a folder with the sequence number and weights folder name
     cv2.waitKey(0)
     cv2.destroyAllWindows()
+    
 def compute_errors(gt, pred):
     """Computation of error metrics between predicted and ground truth depths
     """
@@ -143,7 +145,13 @@ def batch_post_process_disparity(l_disp, r_disp):
     r_mask = l_mask[:, :, ::-1]
     return r_mask * l_disp + l_mask * r_disp + (1.0 - l_mask - r_mask) * m_disp
 
-
+def print_progress(iteration, total, prefix='', suffix='', decimals=1, length=100, fill='█'):
+                    percent = ("{0:." + str(decimals) + "f}").format(100 * (iteration / float(total)))
+                    filled_length = int(length * iteration // total)
+                    bar = fill * filled_length + '-' * (length - filled_length)
+                    sys.stdout.write('\r%s |%s| %s%% %s' % (prefix, bar, percent, suffix))
+                    sys.stdout.flush()
+                    
 def evaluate(opt):
     """Evaluates a pretrained model using a specified test set
     """
@@ -162,12 +170,7 @@ def evaluate(opt):
 
         print("-> Loading weights from {}".format(opt.load_weights_folder))
 
-        # filenames are all the files in opt.data_path/pose
-        
-        sequence_id = int(opt.eval_split.split("_")[1])
-        filenames = readlines(
-            os.path.join(os.path.dirname(__file__), "splits", "mot",
-                     "seq_{:02d}.txt".format(sequence_id)))
+        val_filenames = readlines(os.path.join(os.path.dirname(__file__), "splits", opt.split, "val_files.txt"))
         
         encoder_path = os.path.join(opt.load_weights_folder, "encoder.pth")
         decoder_path = os.path.join(opt.load_weights_folder, "depth.pth")
@@ -177,7 +180,7 @@ def evaluate(opt):
         encoder_dict = torch.load(encoder_path)
         
         img_ext = '.png' if opt.png else '.jpg'
-        dataset = datasets.KITTIMotDataset(opt.data_path, filenames,
+        dataset = datasets.KITTIRAWDataset(opt.data_path, val_filenames, #TODO: check if it works with this type of frame ids
                                            encoder_dict['height'], encoder_dict['width'],
                                            frame_idxs = [0, 1], num_scales=4, is_train=False, img_ext=img_ext)
         dataloader = DataLoader(dataset, opt.batch_size, shuffle=False, num_workers=opt.num_workers,
@@ -205,19 +208,19 @@ def evaluate(opt):
 
         pred_disps = []
         pred_poses = []
-
+        gt_depths = []
         print("-> Computing predictions with size {}x{}".format(
             encoder_dict['width'], encoder_dict['height']))
         
         if opt.save_pred_disps:
             model_name = opt.load_weights_folder.split("/")[-1]
-            depth_save_dir = os.path.join("results", "mot", model_name, 'depth', f"{sequence_id:04d}")
+            depth_save_dir = os.path.join("results", opt.split, model_name, 'depth')
             os.makedirs(depth_save_dir, exist_ok=True)
             
         opt.frame_ids = [0, 1]  # pose network only takes two frames as input
 
         with torch.no_grad():
-            for data in dataloader:
+            for indx, data in enumerate(dataloader):
                 input_color = data[("color", 0, 0)].cuda()
                 for i in opt.frame_ids:
                     data[("color_aug", i, 0)] = data[("color_aug", i, 0)].cuda()
@@ -230,6 +233,7 @@ def evaluate(opt):
 
                 pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
                 pred_disp = pred_disp.cpu()[:, 0].numpy()
+                gt_depth = data["depth_gt"][:, 0].numpy()
                 
                 all_color_aug = torch.cat([data[("color_aug", i, 0)] for i in opt.frame_ids], 1)
                 features = [pose_encoder(all_color_aug)]
@@ -245,25 +249,29 @@ def evaluate(opt):
                     np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
 
                 pred_disps.append(pred_disp)
+                gt_depths.append(gt_depth)
                 pred_poses.append(
                     transformation_from_parameters(axisangle[:, 0], translation[:, 0]).cpu().numpy())
+                
+                print_progress(indx + 1, len(dataloader), prefix='Progress:', suffix='Complete', length=50)
             
             # generate depth for the last frame
-            input_color = data[("color", 1, 0)].cuda()
-            if opt.post_process:
-                # Post-processed results require each image to have two forward passes
-                input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
-            output = depth_decoder(encoder(input_color))
-            pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
-            pred_disp = pred_disp.cpu()[:, 0].numpy()
-            if opt.save_pred_disps:
-                output_path = os.path.join(
-                    depth_save_dir, f"{data['index'][0].item()+1:06d}.npy")
-                np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
-            pred_disps.append(pred_disp)
+            # input_color = data[("color", 1, 0)].cuda()
+            # if opt.post_process:
+            #     # Post-processed results require each image to have two forward passes
+            #     input_color = torch.cat((input_color, torch.flip(input_color, [3])), 0)
+            # output = depth_decoder(encoder(input_color))
+            # pred_disp, _ = disp_to_depth(output[("disp", 0)], opt.min_depth, opt.max_depth)
+            # pred_disp = pred_disp.cpu()[:, 0].numpy()
+            # if opt.save_pred_disps:
+            #     output_path = os.path.join(
+            #         depth_save_dir, f"{data['index'][0].item()+1:06d}.npy")
+            #     np.save(output_path, cv2.resize(pred_disp[0], (1242, 375)))
+            # pred_disps.append(pred_disp)
 
         pred_disps = np.concatenate(pred_disps)
         pred_poses = np.concatenate(pred_poses)
+        gt_depths = np.concatenate(gt_depths)
 
     else:
         # Load predictions from file
@@ -279,7 +287,7 @@ def evaluate(opt):
     if opt.save_pred_poses:
         line_pred_poses = pred_poses.reshape(-1, 16)
         model_name = opt.load_weights_folder.split("/")[-1]
-        save_path = os.path.join("results", 'mot', model_name, "pred_motion",  f"{sequence_id:04d}",)
+        save_path = os.path.join("results", opt.split, model_name, "pred_motion")
         os.makedirs(save_path, exist_ok=True)
         np.savetxt(os.path.join(save_path, "pred_motion.txt"), line_pred_poses)
 
@@ -310,8 +318,9 @@ def evaluate(opt):
         print("-> No ground truth is available for the KITTI benchmark, so not evaluating. Done.")
         quit()
 
-    gt_path = os.path.join(splits_dir,"mot", "gt_depths", f"seq_{sequence_id:02d}.npz")
-    gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
+    # gt_path = os.path.join(splits_dir,"mot", "gt_depths", f"seq_{sequence_id:02d}.npz") #FIXME: 
+    # gt_depths = np.load(gt_path, fix_imports=True, encoding='latin1', allow_pickle=True)["data"]
+    
     # gt_poses_path = os.path.join(opt.data_path, "pose", "{:04d}".format(sequence_id), "pose.txt")
     # gt_global_poses = np.loadtxt(gt_poses_path).reshape(-1, 3, 4)
     # gt_global_poses = np.concatenate(
@@ -359,7 +368,7 @@ def evaluate(opt):
 
         # pred_depth *= opt.pred_depth_scale_factor
         if not opt.disable_median_scaling:
-            ratio = 35
+            ratio = 35 # this the median of the mean of the gt_depths over one sequence
             pred_depth *= ratio
 
         # pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
