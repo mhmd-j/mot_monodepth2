@@ -74,6 +74,62 @@ def get_pixelwise_prediction_interval_std(y_pred_new, nonconformity_scores, epsi
     
     return lower_bound, upper_bound
 
+def get_pixelwise_prediction_interval_std_MC_dropout(y_pred_new, mc_predictions, nonconformity_scores, epsilon=0.05):
+    
+    n_calibration_samples = nonconformity_scores.shape[0]
+
+    # Calculate the quantile of the nonconformity scores for each pixel
+    masked_nonconformity_scores = ma.masked_equal(nonconformity_scores, 0)
+    pixelwise_std = np.std(masked_nonconformity_scores, axis=0)  # Standard deviation at each pixel
+    mc_mean = np.mean(mc_predictions, axis=0)
+    mc_std = np.std(mc_predictions, axis=0)
+    total_uncertainty = np.sqrt(pixelwise_std**2 + mc_std**2)
+
+    z_score = scipy.stats.norm.ppf(1 - epsilon / 2)
+    # q = np.quantile(masked_nonconformity_scores, 1 - epsilon, axis=0)
+    
+    # Construct the prediction interval for each pixel
+    lower_bound = y_pred_new - z_score * total_uncertainty
+    upper_bound = y_pred_new + z_score * total_uncertainty
+    
+    return lower_bound, upper_bound
+
+def monte_carlo_predictions(depth_encoder, depth_decoder,
+                            pose_encoder, pose_decoder,
+                            dataset, opt, sample_indx=None, num_samples=50):
+    depth_encoder.train()  # Set model to training mode to enable dropout
+    depth_decoder.train()
+    pose_encoder.train()
+    pose_decoder.train()
+    np.random.seed(0)
+    if sample_indx is not None:
+        sample_input = dataset[sample_indx]
+    else:
+        inout_ind = np.random.randint(0, len(dataset))
+        sample_input = dataset[inout_ind]
+        
+    sample_input_color = sample_input[("color", 0, 0)].unsqueeze(0).cuda()
+    predictions = []
+    for i in opt.frame_ids:
+        sample_input[("color_aug", i, 0)] = sample_input[("color_aug", i, 0)].unsqueeze(0).cuda()
+        
+    for _ in range(num_samples):
+        with torch.no_grad():
+            sample_output = depth_decoder(depth_encoder(sample_input_color))
+            sample_pred_disp, _ = disp_to_depth(sample_output[("disp", 0)], opt.min_depth, opt.max_depth)
+            
+            sample_gt_depth = sample_input["depth_gt"].squeeze().numpy()
+            sample_gt_height, sample_gt_width = sample_gt_depth.shape
+            # Interpolate the predicted disparity to the ground truth size
+            sample_pred_disp = torch.nn.functional.interpolate(
+                sample_pred_disp, [sample_gt_height, sample_gt_width], mode="bilinear", align_corners=False)
+            
+            sample_pred_disp = sample_pred_disp.cpu().squeeze().numpy()
+            sample_pred_depth = 1 / sample_pred_disp
+            predictions.append(sample_pred_depth)
+            
+    predictions = np.stack(sample_pred_depth, axis=0)
+    return predictions
 
 def plot_depth_with_uncertainty(vis_depth, lower_bound, upper_bound, gt_depth):
     # vis_depth[vis_depth < MIN_DEPTH] = MIN_DEPTH
@@ -156,6 +212,7 @@ def evaluate(opt):
     """
     MIN_DEPTH = 1e-3
     MAX_DEPTH = 80
+    DEPTH_SCALE = 35
 
     assert sum((opt.eval_mono, opt.eval_stereo)) == 1, \
         "Please choose mono or stereo evaluation by setting either --eval_mono or --eval_stereo"
@@ -260,7 +317,7 @@ def evaluate(opt):
                 
                 # pred_disp = cv2.resize(pred_disp, (gt_width, gt_height))
                 if not opt.disable_median_scaling:
-                    ratio = 35 # this the median of the mean of the gt_depths over one sequence
+                    ratio = DEPTH_SCALE # this the median of the mean of the gt_depths over one sequence
                     pred_depth *= ratio
 
                 # pred_depth[pred_depth < MIN_DEPTH] = MIN_DEPTH
@@ -278,8 +335,8 @@ def evaluate(opt):
                 # pred_poses = np.concatenate(pred_poses)
                 # gt_depths = np.concatenate(gt_depths)
                 
-        nonconformity_scores = np.concatenate(nonconformity_scores)
-        np.save('nonconformity_scores.npy', nonconformity_scores)
+        nonconformity_scores = np.concatenate(nonconformity_scores) / ratio
+        np.save('normal_nonconformity_scores.npy', nonconformity_scores)
         lower_bound, upper_bound = get_pixelwise_prediction_interval_std(pred_depth[0], nonconformity_scores)
         if opt.vis_depth:
             plot_depth_with_uncertainty(pred_depth[0], lower_bound, upper_bound, gt_depth)
@@ -288,9 +345,19 @@ def evaluate(opt):
     else:
         # Load nonconformity score from file
         print("-> Loading nonconformity score from {}".format(opt.ext_disp_to_eval))
-        nonconformity_scores = np.load(opt.ext_disp_to_eval)
+        nonconformity_scores = np.load(opt.ext_disp_to_eval) * DEPTH_SCALE
+        
         
         # Choose a random input from the dataset
+        encoder.cuda()
+        encoder.eval()
+        depth_decoder.cuda()
+        depth_decoder.eval()
+        pose_encoder.cuda()
+        pose_encoder.eval()
+        pose_decoder.cuda()
+        pose_decoder.eval()
+        
         with torch.no_grad():
             np.random.seed(0)
             inout_ind = np.random.randint(0, len(dataset))
@@ -321,6 +388,9 @@ def evaluate(opt):
             sample_pred_depth *= 35 # this the median of the mean of the gt_depths over one sequence
             
             lower_bound, upper_bound = get_pixelwise_prediction_interval_std(sample_pred_depth, nonconformity_scores)
+            
+        # mc_predictions = monte_carlo_predictions(encoder, depth_decoder, pose_encoder, pose_decoder, dataset, opt)
+        # lower_bound, upper_bound = get_pixelwise_prediction_interval_std_MC_dropout(sample_pred_depth, mc_predictions, nonconformity_scores)
 
 
         if opt.vis_depth:
